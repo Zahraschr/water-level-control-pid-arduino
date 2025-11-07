@@ -1,0 +1,109 @@
+// WaterLevelControl.ino
+// PID-based water level control with HC-SR04 and two pumps
+// Source info: original project document. :contentReference[oaicite:7]{index=7}
+
+#include <PID_v1.h>
+
+// Pins
+const int pump1Pin = 10; // PID controlled pump (PWM)
+const int pump2Pin = 11; // Serial controlled pump (PWM)
+const int trigPin = 2;   // Ultrasonic sensor trigger
+const int echoPin = 3;   // Ultrasonic sensor echo
+
+// Tank geometry
+const double tankHeight = 30.5; // Tank height in cm (change as needed)
+
+// PID variables
+double setpoint = 0.0; // desired water level (cm)
+double input = 0.0;    // current measured water level (cm)
+double output = 0.0;   // PID output
+
+// PID constants (initial values from project)
+double Kp = 2.0;
+double Ki = 0.5;
+double Kd = 1.0;
+
+PID pid(&input, &output, &setpoint, Kp, Ki, Kd, DIRECT);
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  pinMode(pump1Pin, OUTPUT);
+  pinMode(pump2Pin, OUTPUT);
+
+  // initial setpoint (optional) — can be updated via serial
+  setpoint = 15.0; // example default; change as needed
+
+  pid.SetMode(AUTOMATIC);
+  // Optionally tune output limits if desired:
+  // pid.SetOutputLimits(0, 255);
+}
+
+void loop() {
+  double distance = readUltrasonicSensor();    // distance from sensor to water surface (cm)
+  input = tankHeight - distance;                // water level in cm (assuming sensor at tank top)
+
+  pid.Compute();                                // update PID
+
+  // Map PID output to PWM for pump1.
+  // The project mapped 0-255 to 128-255 for pump1 in their code.
+  int constrainedOutput = constrain((int)output, 0, 255);
+  int pump1PWM = map(constrainedOutput, 0, 255, 128, 255);
+  analogWrite(pump1Pin, pump1PWM);
+
+  // Serial input handling: expects "setpoint,pumpSpeed"
+  if (Serial.available()) {
+    String inputString = Serial.readStringUntil('\n');
+    inputString.trim();
+    int commaIndex = inputString.indexOf(',');
+
+    if (commaIndex > 0) {
+      String setpointString = inputString.substring(0, commaIndex);
+      String pumpSpeedString = inputString.substring(commaIndex + 1);
+
+      double newSetpoint = setpointString.toDouble();
+      int pumpSpeed = pumpSpeedString.toInt();
+
+      // Constrain pump speed as in project (50 to 70) and map to PWM for pump2
+      pumpSpeed = constrain(pumpSpeed, 50, 70);
+      int pump2PWM = map(pumpSpeed, 50, 70, 0, 179);
+      analogWrite(pump2Pin, pump2PWM);
+
+      setpoint = newSetpoint;
+
+      Serial.print("Setpoint updated to: ");
+      Serial.println(setpoint);
+      Serial.print("Pump 2 set to: ");
+      Serial.println(pumpSpeed);
+    } else {
+      Serial.println("Invalid input format. Please use 'setpoint,speed'.");
+    }
+  }
+
+  // small delay to avoid flooding serial and allow sensor to settle
+  delay(100);
+}
+
+// Reads HC-SR04 and returns measured distance in cm
+double readUltrasonicSensor() {
+  // Send trigger pulse
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Read echo pulse duration
+  long duration = pulseIn(echoPin, HIGH, 30000); // timeout 30 ms (safe)
+  if (duration == 0) {
+    // no echo (timeout) — return large distance (empty tank) or last value
+    return tankHeight; // assume water level 0 cm (distance = tankHeight)
+  }
+
+  // Convert time (microseconds) to distance (cm)
+  double distanceCm = (duration / 2.0) / 29.1; // speed of sound ~343 m/s
+  return distanceCm;
+}
